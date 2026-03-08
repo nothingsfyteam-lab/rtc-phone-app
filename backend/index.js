@@ -94,8 +94,8 @@ io.on('connection', (socket) => {
     });
 });
 
-// ── SPA fallback (serves index.html for all non-API routes) ──────────────────
-app.get('(.*)', (req, res) => {
+// ── SPA fallback (serves index.html for all non-handled routes) ─────────────
+app.use((req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
 });
 
