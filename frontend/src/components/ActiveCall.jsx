@@ -2,24 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { useCall } from '../context/CallContext';
 import { PhoneOff, Mic, MicOff, Video, VideoOff, Users, Plus } from 'lucide-react';
 
-// Attach a MediaStream to an <audio> element imperatively (bypasses React timing issues)
-function AudioPlayer({ stream }) {
-    const audioRef = useRef(null);
-    useEffect(() => {
-        if (!stream) return;
-        const audio = new window.Audio();
-        audio.srcObject = stream;
-        audio.autoplay = true;
-        audioRef.current = audio;
-        audio.play().catch(e => console.warn('[AudioPlayer] play failed:', e));
-        return () => {
-            audio.srcObject = null;
-            audio.remove();
-            audioRef.current = null;
-        };
-    }, [stream]);
-    return null; // renders nothing — audio plays in background
-}
 
 export default function ActiveCall() {
     const {
@@ -54,9 +36,6 @@ export default function ActiveCall() {
 
     return (
         <div style={styles.container} className="animate-fade-in">
-            {/* Always play audio imperatively */}
-            <AudioPlayer stream={remoteStream} />
-
             <div style={styles.header}>
                 <div style={styles.statusBadge}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: callState === 'calling' ? '#f59e0b' : '#10b981' }}></div>

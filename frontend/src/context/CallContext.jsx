@@ -10,11 +10,7 @@ const ICE_CONFIG = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-        },
+        { urls: 'stun:stun2.l.google.com:19302' },
         {
             urls: 'turn:openrelay.metered.ca:443',
             username: 'openrelayproject',
@@ -47,21 +43,18 @@ export const CallProvider = ({ children }) => {
     const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
     const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
 
-    // ─── Audio helper ─────────────────────────────────────────────────────────────
-    const playRemoteStream = (stream) => {
-        if (!stream) return;
-        // Destroy old audio element
+    // ─── Audio ─────────────────────────────────────────────────────────────
+    useEffect(() => {
         if (audioElRef.current) {
-            audioElRef.current.srcObject = null;
-            audioElRef.current = null;
+            if (remoteStream) {
+                console.log('[Audio] Attaching remote stream to DOM element');
+                audioElRef.current.srcObject = remoteStream;
+                audioElRef.current.play().catch(e => console.warn('[Audio] play() blocked by browser:', e.message));
+            } else {
+                audioElRef.current.srcObject = null;
+            }
         }
-        const audio = new Audio();
-        audio.srcObject = stream;
-        audio.autoplay = true;
-        audioElRef.current = audio;
-        audio.play().catch(e => console.warn('[Audio] play() blocked:', e.message));
-        console.log('[Audio] Playing remote stream', stream.id);
-    };
+    }, [remoteStream]);
 
     // ─── Media ───────────────────────────────────────────────────────────────────
     const getLocalStream = async (video = false) => {
@@ -117,7 +110,6 @@ export const CallProvider = ({ children }) => {
             const stream = event.streams[0];
             setRemoteStream(stream);
             setCallState('active');
-            playRemoteStream(stream);
         };
 
         return pc;
@@ -189,11 +181,6 @@ export const CallProvider = ({ children }) => {
 
         pcRef.current?.close();
         pcRef.current = null;
-
-        if (audioElRef.current) {
-            audioElRef.current.srcObject = null;
-            audioElRef.current = null;
-        }
 
         localStreamRef.current?.getTracks().forEach(t => t.stop());
         localStreamRef.current = null;
@@ -295,7 +282,6 @@ export const CallProvider = ({ children }) => {
             console.log('[Socket] Remote ended call');
             pcRef.current?.close();
             pcRef.current = null;
-            if (audioElRef.current) { audioElRef.current.srcObject = null; audioElRef.current = null; }
             localStreamRef.current?.getTracks().forEach(t => t.stop());
             localStreamRef.current = null;
             pendingCandidates.current = [];
@@ -351,6 +337,8 @@ export const CallProvider = ({ children }) => {
             startCall, acceptCall, rejectCall, endCall, toggleVideo, toggleAudio, inviteToCall,
         }}>
             {children}
+            {/* Always mount a native audio element to play the remote peer's voice reliably on mobile */}
+            <audio ref={audioElRef} autoPlay playsInline style={{ display: 'none' }} />
         </CallContext.Provider>
     );
 };
