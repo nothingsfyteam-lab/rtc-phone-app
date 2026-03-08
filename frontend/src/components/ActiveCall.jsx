@@ -55,7 +55,7 @@ export default function ActiveCall() {
                                 {activeCallContact ? activeCallContact.slice(-4) : '...'}
                             </div>
                             <div style={styles.voiceName}>{activeCallContact}</div>
-                            {remoteStream && (
+                            {callState === 'active' && (
                                 <div style={{ fontSize: '0.8rem', color: '#10b981', marginTop: '0.75rem', letterSpacing: '1px' }}>
                                     ● LIVE
                                 </div>
