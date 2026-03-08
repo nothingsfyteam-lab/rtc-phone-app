@@ -1,0 +1,19 @@
+{
+  "name": "rtc-phone-app",
+  "version": "1.0.0",
+  "description": "WebRTC Phone App",
+  "main": "backend/index.js",
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "start": "node backend/index.js",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && node index.js",
+    "dev:frontend": "cd frontend && npm run dev"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

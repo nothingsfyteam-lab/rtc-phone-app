@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">RTC Phone</string>
+    <string name="title_activity_main">RTC Phone</string>
+    <string name="package_name">com.rtcphone.app</string>
+    <string name="custom_url_scheme">com.rtcphone.app</string>
+</resources>
