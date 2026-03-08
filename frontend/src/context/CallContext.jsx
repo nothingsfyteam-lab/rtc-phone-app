@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import Peer from 'peerjs';
 
 const CallContext = createContext(null);
 export const useCall = () => useContext(CallContext);
@@ -8,13 +9,10 @@ const SIGNALING_URL = window.location.origin;
 
 export const CallProvider = ({ children }) => {
     const socketRef = useRef(null);
+    const peerRef = useRef(null);           // PeerJS instance
     const localStreamRef = useRef(null);
-
-    // Audio Streaming Refs
-    const audioCtxRef = useRef(null);
-    const micSourceRef = useRef(null);
-    const processorRef = useRef(null);
-    const playbackStartTimeRef = useRef(0);
+    const audioElRef = useRef(null);        // Native audio element for remote voice
+    const activeCallRef = useRef(null);     // Active PeerJS MediaConnection
 
     const [myNumber, setMyNumber] = useState(null);
     const [friends, setFriends] = useState([]);
@@ -23,152 +21,180 @@ export const CallProvider = ({ children }) => {
     const [callState, setCallState] = useState('idle');
     const [activeCallContact, setActiveCallContact] = useState(null);
     const [incomingCall, setIncomingCall] = useState(null);
-    const [remoteStream, setRemoteStream] = useState(null); // Dummy for UI compat
+    const [remoteStream, setRemoteStream] = useState(null);
 
     const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
     const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
 
-    // ─── Audio Context Setup ───────────────────────────────────────────────────
-    const initAudio = () => {
-        if (!audioCtxRef.current) {
-            audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            playbackStartTimeRef.current = audioCtxRef.current.currentTime;
+    // ─── Media Capture ──────────────────────────────────────────────────────────
+    const getLocalStream = async (video = false) => {
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(t => t.stop());
         }
-        if (audioCtxRef.current.state === 'suspended') {
-            audioCtxRef.current.resume();
-        }
-    };
-
-    // ─── Capture & Send Audio ──────────────────────────────────────────────────
-    const startStreaming = async (targetNumber) => {
-        console.log('[Stream] Starting capture to', targetNumber);
-        initAudio();
-
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
             localStreamRef.current = stream;
-
-            const source = audioCtxRef.current.createMediaStreamSource(stream);
-            // ScriptProcessor is deprecated but widely supported for simple streaming
-            const processor = audioCtxRef.current.createScriptProcessor(4096, 1, 1);
-
-            source.connect(processor);
-            processor.connect(audioCtxRef.current.destination); // Required to trigger onaudioprocess
-
-            processor.onaudioprocess = (e) => {
-                if (callState !== 'active') return;
-
-                const inputData = e.inputBuffer.getChannelData(0);
-                // Convert to Int16 to save bandwidth
-                const int16Data = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) {
-                    int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-                }
-
-                socketRef.current?.emit('audio_chunk', {
-                    targetNumber,
-                    chunk: int16Data.buffer
-                });
-            };
-
-            micSourceRef.current = source;
-            processorRef.current = processor;
-        } catch (err) {
-            console.error('[Stream] Capture failed', err);
-            alert('Could not access microphone for streaming.');
+            return stream;
+        } catch (e) {
+            alert('Mic/Camera access denied: ' + e.message);
+            return null;
         }
     };
 
-    const stopStreaming = () => {
-        console.log('[Stream] Stopping');
-        processorRef.current?.disconnect();
-        micSourceRef.current?.disconnect();
-        localStreamRef.current?.getTracks().forEach(t => t.stop());
+    // ─── PeerJS Initialization ───────────────────────────────────────────────────
+    const initPeer = (id) => {
+        if (peerRef.current) return;
 
-        processorRef.current = null;
-        micSourceRef.current = null;
-        localStreamRef.current = null;
-    };
+        console.log('[PeerJS] Initializing with ID:', id);
+        // Use default PeerJS cloud servers
+        const peer = new Peer(id, {
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
+        });
 
-    // ─── Receive & Play Audio ──────────────────────────────────────────────────
-    const handleRemoteAudio = (chunk) => {
-        if (!audioCtxRef.current || callState !== 'active') return;
+        peer.on('open', (peerID) => {
+            console.log('[PeerJS] Connection open. ID:', peerID);
+        });
 
-        const int16Data = new Int16Array(chunk);
-        const float32Data = new Float32Array(int16Data.length);
-        for (let i = 0; i < int16Data.length; i++) {
-            float32Data[i] = int16Data[i] / 0x7FFF;
-        }
+        peer.on('call', (call) => {
+            console.log('[PeerJS] Incoming call from:', call.peer);
+            setIncomingCall({ fromNumber: call.peer, call });
+            setCallState('ringing');
+        });
 
-        const buffer = audioCtxRef.current.createBuffer(1, float32Data.length, 16000);
-        buffer.getChannelData(0).set(float32Data);
+        peer.on('error', (err) => {
+            console.error('[PeerJS] Error:', err.type, err);
+            if (err.type === 'peer-unavailable') {
+                alert('Contact is offline or ID is invalid.');
+                endCall();
+            }
+        });
 
-        const source = audioCtxRef.current.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioCtxRef.current.destination);
-
-        // Simple scheduling to handle jitter
-        const now = audioCtxRef.current.currentTime;
-        if (playbackStartTimeRef.current < now) {
-            playbackStartTimeRef.current = now + 0.1; // Latency buffer
-        }
-
-        source.start(playbackStartTimeRef.current);
-        playbackStartTimeRef.current += buffer.duration;
+        peerRef.current = peer;
     };
 
     // ─── Call Actions ────────────────────────────────────────────────────────────
     const startCall = async (targetNumber) => {
-        console.log('[Call] Initiating link to', targetNumber);
-        initAudio();
+        console.log('[Call] Calling:', targetNumber);
+        const stream = await getLocalStream(false);
+        if (!stream) return;
+
         setActiveCallContact(targetNumber);
         setCallState('calling');
-        socketRef.current?.emit('call_offer', { targetNumber });
+
+        // Initiate PeerJS call
+        const call = peerRef.current.call(targetNumber, stream);
+        activeCallRef.current = call;
+
+        setupCallListeners(call);
     };
 
     const acceptCall = async () => {
         if (!incomingCall) return;
-        console.log('[Call] Accepting link from', incomingCall.fromNumber);
-        initAudio();
-        const target = incomingCall.fromNumber;
-        setActiveCallContact(target);
+        const { fromNumber, call } = incomingCall;
+        console.log('[Call] Accepting call from:', fromNumber);
+
+        const stream = await getLocalStream(false);
+        if (!stream) return;
+
+        setActiveCallContact(fromNumber);
         setCallState('active');
         setIncomingCall(null);
-        socketRef.current?.emit('call_answer', { targetNumber: target });
-        startStreaming(target);
+
+        call.answer(stream);
+        activeCallRef.current = call;
+        setupCallListeners(call);
+    };
+
+    const setupCallListeners = (call) => {
+        call.on('stream', (remoteStream) => {
+            console.log('[Call] Received remote stream');
+            setRemoteStream(remoteStream);
+            setCallState('active');
+
+            if (audioElRef.current) {
+                audioElRef.current.srcObject = remoteStream;
+                audioElRef.current.play().catch(e => console.warn('[Audio] play failed:', e));
+            }
+        });
+
+        call.on('close', () => {
+            console.log('[Call] Remote connection closed');
+            endCall();
+        });
+
+        call.on('error', (err) => {
+            console.error('[Call] MediaConnection error:', err);
+            endCall();
+        });
     };
 
     const rejectCall = () => {
         if (!incomingCall) return;
-        socketRef.current?.emit('call_ended', { targetNumber: incomingCall.fromNumber });
+        incomingCall.call.close();
         setIncomingCall(null);
         setCallState('idle');
     };
 
     const endCall = useCallback(() => {
-        console.log('[Call] Ending link');
-        if (activeCallContact) {
-            socketRef.current?.emit('call_ended', { targetNumber: activeCallContact });
+        console.log('[Call] Ending session');
+        activeCallRef.current?.close();
+        activeCallRef.current = null;
+
+        localStreamRef.current?.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
+
+        if (audioElRef.current) {
+            audioElRef.current.srcObject = null;
         }
-        stopStreaming();
+
+        setRemoteStream(null);
         setCallState('idle');
         setActiveCallContact(null);
         setIncomingCall(null);
-    }, [activeCallContact]);
+    }, []);
 
     const toggleAudio = () => {
-        setLocalAudioEnabled(!localAudioEnabled);
-        // In this implementation, we just stop sending if disabled?
-        // Or actually mute the processor.
+        if (localStreamRef.current) {
+            const track = localStreamRef.current.getAudioTracks()[0];
+            if (track) {
+                track.enabled = !track.enabled;
+                setLocalAudioEnabled(track.enabled);
+            }
+        }
     };
 
-    const toggleVideo = () => {
-        alert('Video is currently disabled in built-in streaming mode.');
+    const toggleVideo = async () => {
+        // PeerJS makes renegotiation tricky, so we toggle track enabled for now
+        if (localStreamRef.current) {
+            const track = localStreamRef.current.getVideoTracks()[0];
+            if (track) {
+                track.enabled = !track.enabled;
+                setLocalVideoEnabled(track.enabled);
+            } else {
+                // Try to upgrade to video if allowed
+                try {
+                    const vs = await navigator.mediaDevices.getUserMedia({ video: true });
+                    const vt = vs.getVideoTracks()[0];
+                    localStreamRef.current.addTrack(vt);
+                    // Replace track in all outgoing senders if possible
+                    activeCallRef.current?.peerConnection.getSenders().forEach(s => {
+                        if (s.track?.kind === 'video') s.replaceTrack(vt);
+                    });
+                    setLocalVideoEnabled(true);
+                } catch (e) { console.error('[Video] upgrade failed', e); }
+            }
+        }
     };
 
     const inviteToCall = (n) => startCall(n);
 
-    // ─── Socket ──────────────────────────────────────────────────────────────────
+    // ─── Socket & Lifecycle ────────────────────────────────────────────────────────
     useEffect(() => {
         const saved = localStorage.getItem('friends');
         if (saved) try { setFriends(JSON.parse(saved)); } catch { }
@@ -181,36 +207,14 @@ export const CallProvider = ({ children }) => {
         socket.on('registered', ({ number }) => {
             setMyNumber(number);
             localStorage.setItem('myNumber', number);
+            initPeer(number);
         });
 
-        socket.on('call_offer', ({ fromNumber }) => {
-            console.log('[Socket] Incoming link from', fromNumber);
-            setIncomingCall({ fromNumber });
-            setCallState('ringing');
-        });
-
-        socket.on('call_answer', ({ fromNumber }) => {
-            console.log('[Socket] Link accepted by', fromNumber);
-            setCallState('active');
-            startStreaming(fromNumber);
-        });
-
-        socket.on('audio_chunk', ({ chunk }) => {
-            handleRemoteAudio(chunk);
-        });
-
-        socket.on('call_ended', () => {
-            console.log('[Socket] Link terminated by remote');
-            stopStreaming();
-            setCallState('idle');
-            setActiveCallContact(null);
-            setIncomingCall(null);
-        });
-
-        // Friend logic (unchanged)
+        // Backend only handles social features, PeerJS handles calling
         socket.on('friend_request_received', ({ fromNumber }) => {
             setFriendRequests(prev => [...prev.filter(n => n !== fromNumber), fromNumber]);
         });
+
         socket.on('friend_request_accepted', ({ byNumber }) => {
             setFriends(prev => {
                 if (prev.find(f => f.number === byNumber)) return prev;
@@ -220,23 +224,23 @@ export const CallProvider = ({ children }) => {
             });
         });
 
-        return () => socket.disconnect();
+        return () => {
+            socket.disconnect();
+            peerRef.current?.destroy();
+        };
     }, []);
 
-    // ─── Social ──────────────────────────────────────────────────────────────────
-    const addFriend = (number, name) => {
-        setFriends(prev => {
-            if (prev.find(f => f.number === number)) return prev;
-            const next = [...prev, { number, name }];
-            localStorage.setItem('friends', JSON.stringify(next));
-            return next;
-        });
-    };
+    // ─── Social ───
     const sendFriendRequest = (n) => socketRef.current?.emit('friend_request', { targetNumber: n });
     const acceptFriendRequest = (n) => {
         socketRef.current?.emit('friend_request_accepted', { targetNumber: n });
         setFriendRequests(prev => prev.filter(x => x !== n));
-        addFriend(n, `Contact ${n.slice(-4)}`);
+        setFriends(prev => {
+            if (prev.find(f => f.number === n)) return prev;
+            const next = [...prev, { number: n, name: `Contact ${n.slice(-4)}` }];
+            localStorage.setItem('friends', JSON.stringify(next));
+            return next;
+        });
     };
     const declineFriendRequest = (n) => {
         socketRef.current?.emit('friend_request_denied', { targetNumber: n });
@@ -250,8 +254,7 @@ export const CallProvider = ({ children }) => {
         });
     };
 
-    const remoteStreams = {}; // Compat
-    const remoteStreamRef = useRef(null);
+    const remoteStreams = activeCallContact && remoteStream ? { [activeCallContact]: remoteStream } : {};
 
     return (
         <CallContext.Provider value={{
@@ -263,6 +266,7 @@ export const CallProvider = ({ children }) => {
             startCall, acceptCall, rejectCall, endCall, toggleVideo, toggleAudio, inviteToCall,
         }}>
             {children}
+            <audio ref={audioElRef} autoPlay playsInline style={{ display: 'none' }} />
         </CallContext.Provider>
     );
 };

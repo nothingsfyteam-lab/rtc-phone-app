@@ -39,35 +39,7 @@ io.on('connection', (socket) => {
         console.log(`  registered ${socket.id} → ${number}`);
     });
 
-    // ── Audio Streaming (WebSocket Alternative to WebRTC) ──────────────────────
-    socket.on('audio_chunk', ({ targetNumber, chunk }) => {
-        const targetId = numberToSocket.get(targetNumber);
-        const from = activeUsers.get(socket.id);
-        if (targetId && from) {
-            // Relay raw audio buffer direktly
-            io.to(targetId).emit('audio_chunk', { fromNumber: from, chunk });
-        }
-    });
-
-    socket.on('call_offer', ({ targetNumber }) => {
-        const targetId = numberToSocket.get(targetNumber);
-        const from = activeUsers.get(socket.id);
-        if (targetId && from) io.to(targetId).emit('call_offer', { fromNumber: from });
-    });
-
-    socket.on('call_answer', ({ targetNumber }) => {
-        const targetId = numberToSocket.get(targetNumber);
-        const from = activeUsers.get(socket.id);
-        if (targetId && from) io.to(targetId).emit('call_answer', { fromNumber: from });
-    });
-
-    socket.on('call_ended', ({ targetNumber }) => {
-        const targetId = numberToSocket.get(targetNumber);
-        const from = activeUsers.get(socket.id);
-        if (targetId && from) io.to(targetId).emit('call_ended', { fromNumber: from });
-    });
-
-    // ── Social ───────────────────────────────────────────────────────────────────
+    // ── Social Features (Relay only) ───────────────────────────────────────────
     socket.on('friend_request', ({ targetNumber }) => {
         const targetId = numberToSocket.get(targetNumber);
         const from = activeUsers.get(socket.id);
@@ -86,7 +58,6 @@ io.on('connection', (socket) => {
         if (targetId && from) io.to(targetId).emit('friend_request_denied', { byNumber: from });
     });
 
-    // ── Disconnect ───────────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
         const number = activeUsers.get(socket.id);
         if (number) {

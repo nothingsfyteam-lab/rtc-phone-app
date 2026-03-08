@@ -12,6 +12,7 @@
   "dependencies": {
     "@vitejs/plugin-basic-ssl": "^2.1.4",
     "lucide-react": "^0.577.0",
+    "peerjs": "^1.5.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "simple-peer": "^9.11.1",
